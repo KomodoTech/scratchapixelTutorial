@@ -27,64 +27,113 @@ typedef uint16_t uint16;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
 
+struct sdl_offscreen_buffer
+{
+    SDL_Texture *Texture;
+    void *Memory;
+    int Width;
+    int Height;
+    int Pitch;
+};
 
-global_variable SDL_Texture *Texture;
-global_variable void *BitmapMemory;
-global_variable int BitmapWidth;
-global_variable int BitmapHeight;
-global_variable int BytesPerPixel = 4;
+struct sdl_window_dimension
+{
+    int Width;
+    int Height;
+};
+
+global_variable sdl_offscreen_buffer GlobalBackbuffer;
 
 global_variable bool Running;
 
+sdl_window_dimension
+SDLGetWindowDimension(SDL_Window *Window)
+{
+    sdl_window_dimension Result;
+    SDL_GetWindowSize(Window, &Result.Width, &Result.Height);
+
+    return(Result);
+}
+
 /*DISPLAY TEST GRADIENT FOR RENDERING*/
 internal void
-RenderWeirdGradient(int BlueOffset, int GreenOffset)
+RenderWeirdGradient(sdl_offscreen_buffer Buffer, int BlueOffset, int GreenOffset)
 {
-    int Width = BitmapWidth;
-    int Height = BitmapHeight;
-
-    int Pitch = Width * BytesPerPixel;
-    uint8 *Row = (uint8 *)BitmapMemory; // Start at beginning of Bitmap
-
-    for(int Y = 0; Y < BitmapHeight; ++Y)
+    /* NOTE(Alex):
+     * Typeset to make pointer arithmetic simple: C multiplies pointer by size of thing being pointed to
+     * This way, when we say Row += Pitch, it is equivalent to saying
+     * 
+     * Row += Width * BytesPerPixel * SizeOf(uint8 *)
+     * 
+     * Since uint8 has a size of 8 bits(aka 1 byte), and we only need 1 byte
+     * per pixel component (4 bytes for one RGBX pixel),we end up with a 
+     * nice intuitive for-loop.
+     */
+    uint8 *Row = (uint8 *)Buffer.Memory;
+    for(int Y = 0; Y < Buffer.Height; ++Y)
     {
-        uint32 *Pixel = (uint32 *)Row;
-        for(int X = 0; X < BitmapWidth; ++X)
+        uint32 *Pixel = (uint32 *)Row; // One Pixel is 4x8 bits large
+        for(int X = 0; X < Buffer.Width; ++X)
         {
             uint8 Blue = (X + BlueOffset);
             uint8 Green = (Y + GreenOffset);
+            uint8 Red = 0;
 
-            *Pixel++ = ((Green << 8) | Blue);
+            /*NOTE (Alex): 
+             * x << y means shift all bits in x left by y bits 
+             * x | y  means each bit in x OR each bit in y
+             *
+             * In our case:
+             * 
+             * 32-bit Pixel
+             *
+             * MEMORY ORDER WE EXPECT:                RR  GG  BB  XX
+             * LOADED IN (LITTLE ENDIAN):             XX  BB  GG  RR
+             * WINDOWS WANTED:                        XX  RR  GG  BB
+             * MEMORY ORDER WINDOWS:                  BB  GG  RR  XX
+             * WINDOWS ORDER LOADED (LITTLE ENDIAN):  XX  RR  GG  BB
+             * 
+             * RESULT: Windows got what they wanted and now I'm sad
+             */
+
+            *Pixel = ((Red << 16) | (Green << 8) | Blue);
+            Pixel++;
         }
 
-        Row += Pitch;
+        Row += Buffer.Pitch; // NOTE (Alex): We do this in case Pitch does not end up lining up    
     }
 }
 
-
+/* NOTE(Alex):
+ * Here we pass Buffer as a pointer, because we will need to modify its
+ * contents
+ */
 internal void
-SDLResizeTexture(SDL_Renderer *Renderer, int Width, int Height)
+SDLResizeTexture(sdl_offscreen_buffer *Buffer, SDL_Renderer *Renderer, int Width, int Height)
 {
+    int BytesPerPixel = 4;
+
     /* 
      * Free up the memory being used by the texture before creating a 
      * new one with the proper size.
      */
-    if (BitmapMemory)
+    if (Buffer->Memory)
     {
-        munmap(BitmapMemory,
-              BitmapWidth * BitmapHeight * BytesPerPixel);
+        munmap(Buffer->Memory,
+              Buffer->Width * Buffer->Height * BytesPerPixel);
     }
-    if (Texture)
+    if (Buffer->Texture)
     {
-        SDL_DestroyTexture(Texture);
+        SDL_DestroyTexture(Buffer->Texture);
     }
-    Texture = SDL_CreateTexture(Renderer,
+    Buffer->Texture = SDL_CreateTexture(Renderer,
                                 SDL_PIXELFORMAT_ARGB8888,
                                 SDL_TEXTUREACCESS_STREAMING,
                                 Width,
                                 Height);
-    BitmapWidth = Width;
-    BitmapHeight = Height;
+    Buffer->Width = Width;
+    Buffer->Height = Height;
+    Buffer->Pitch = Width * BytesPerPixel;
     /*
      * mmap arguments:
      *
@@ -102,7 +151,7 @@ SDLResizeTexture(SDL_Renderer *Renderer, int Width, int Height)
      * offset: Where in the file to begin mapping. 0 Since again we aren't
      * using mmap to map a chunk of a file into memory.
      */
-    BitmapMemory = mmap(0,
+    Buffer->Memory = mmap(0,
                         Width * Height * BytesPerPixel,
                         PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS,
@@ -112,23 +161,23 @@ SDLResizeTexture(SDL_Renderer *Renderer, int Width, int Height)
 
 
 internal void
-SDLUpdateWindow(SDL_Window *Window, SDL_Renderer *Renderer)
+SDLUpdateWindow(SDL_Window *Window, SDL_Renderer *Renderer, sdl_offscreen_buffer Buffer)
 {
-    SDL_UpdateTexture(Texture,
-                      0,                            // Pointer to SDL_Rect used for updating texture one rectangle at a time
-                      BitmapMemory,                 // Pointer to Bitmap data
-                      BitmapWidth * BytesPerPixel); // Pitch used for creating gaps in memory between horizontal lines of the bitmap 
+    SDL_UpdateTexture(Buffer.Texture,
+                      0,                 // Pointer to SDL_Rect used for updating texture one rectangle at a time
+                      Buffer.Memory,     // Pointer to Bitmap data
+                      Buffer.Pitch);     // Pitch used for creating gaps in memory between horizontal lines of the bitmap 
 
     /*
-     * NOTE: setting srcrect and dstrect to null pointers will stretch the
+     * NOTE (Alex): setting srcrect and dstrect to null pointers will stretch the
      * entire texture over the entire window 
      */
     SDL_RenderCopy(Renderer,
-                    Texture,
+                    Buffer.Texture,
                     0,             // (srcrect) Source Rectangle delimiting area of Texture we wish to stretch
                     0);            // (dstrect) Destination Rectangle delimiting area of Window the Texture selection will be stretched into
 
-    /*NOTE: Without presenting the renderer, nothing gets rendered */
+    /*NOTE (Alex): Without presenting the renderer, nothing gets rendered */
     SDL_RenderPresent(Renderer);
 }
 
@@ -156,7 +205,7 @@ void HandleEvent(SDL_Event *Event)
                     printf("SDL_WINDOWEVENT_SIZE_CHANGED (%d, %d)\n",
                         Event->window.data1, // width 
                         Event->window.data2); // height
-                    SDLResizeTexture(Renderer, Event->window.data1, Event->window.data2);
+                    SDLResizeTexture(&GlobalBackbuffer, Renderer, Event->window.data1, Event->window.data2);
                 }
                 break;
 
@@ -171,7 +220,7 @@ void HandleEvent(SDL_Event *Event)
                 {
                     SDL_Window *Window = SDL_GetWindowFromID(Event->window.windowID);
                     SDL_Renderer *Renderer = SDL_GetRenderer(Window);
-                    SDLUpdateWindow(Window, Renderer);
+                    SDLUpdateWindow(Window, Renderer, GlobalBackbuffer);
                 }
                 break;
             }
@@ -203,9 +252,8 @@ int main(int argc, char *argv[])
         if (Renderer)
         {
             Running = true;
-            int Width, Height;
-            SDL_GetWindowSize(Window, &Width, &Height);
-            SDLResizeTexture(Renderer, Width, Height);
+            sdl_window_dimension Dimension = SDLGetWindowDimension(Window);
+            SDLResizeTexture(&GlobalBackbuffer, Renderer, Dimension.Width, Dimension.Height);
             int XOffset = 0;
             int YOffset = 0;
 
@@ -218,8 +266,8 @@ int main(int argc, char *argv[])
                     HandleEvent(&Event);
                 }
                 
-                RenderWeirdGradient(XOffset, YOffset);
-                SDLUpdateWindow(Window, Renderer);
+                RenderWeirdGradient(GlobalBackbuffer, XOffset, YOffset);
+                SDLUpdateWindow(Window, Renderer, GlobalBackbuffer);
 
                 ++XOffset;
                 YOffset += 2;
