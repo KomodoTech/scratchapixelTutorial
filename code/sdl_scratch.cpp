@@ -17,6 +17,8 @@
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
+#define MAX_CONTROLLERS 4
+
 typedef int8_t int8;
 typedef int16_t int16;
 typedef int32_t int32;
@@ -44,7 +46,9 @@ struct sdl_window_dimension
 
 global_variable sdl_offscreen_buffer GlobalBackbuffer;
 
-global_variable bool Running;
+SDL_GameController *ControllerHandles[MAX_CONTROLLERS];
+SDL_Haptic *RumbleHandles[MAX_CONTROLLERS];
+
 
 sdl_window_dimension
 SDLGetWindowDimension(SDL_Window *Window)
@@ -57,7 +61,7 @@ SDLGetWindowDimension(SDL_Window *Window)
 
 /*DISPLAY TEST GRADIENT FOR RENDERING*/
 internal void
-RenderWeirdGradient(sdl_offscreen_buffer Buffer, int BlueOffset, int GreenOffset)
+RenderWeirdGradient(sdl_offscreen_buffer *Buffer, int BlueOffset, int GreenOffset)
 {
     /* NOTE(Alex):
      * Typeset to make pointer arithmetic simple: C multiplies pointer by size of thing being pointed to
@@ -69,11 +73,11 @@ RenderWeirdGradient(sdl_offscreen_buffer Buffer, int BlueOffset, int GreenOffset
      * per pixel component (4 bytes for one RGBX pixel),we end up with a 
      * nice intuitive for-loop.
      */
-    uint8 *Row = (uint8 *)Buffer.Memory;
-    for(int Y = 0; Y < Buffer.Height; ++Y)
+    uint8 *Row = (uint8 *)Buffer->Memory;
+    for(int Y = 0; Y < Buffer->Height; ++Y)
     {
         uint32 *Pixel = (uint32 *)Row; // One Pixel is 4x8 bits large
-        for(int X = 0; X < Buffer.Width; ++X)
+        for(int X = 0; X < Buffer->Width; ++X)
         {
             uint8 Blue = (X + BlueOffset);
             uint8 Green = (Y + GreenOffset);
@@ -97,10 +101,10 @@ RenderWeirdGradient(sdl_offscreen_buffer Buffer, int BlueOffset, int GreenOffset
              */
 
             *Pixel = ((Red << 16) | (Green << 8) | Blue);
-            Pixel++;
+            Pixel++; //NOTE(Alex): I separated the pointer increment from value assignment to make it easier to debug this with GDB
         }
 
-        Row += Buffer.Pitch; // NOTE (Alex): We do this in case Pitch does not end up lining up    
+        Row += Buffer->Pitch; // NOTE(Alex): We do this in case Pitch does not end up lining up    
     }
 }
 
@@ -161,19 +165,19 @@ SDLResizeTexture(sdl_offscreen_buffer *Buffer, SDL_Renderer *Renderer, int Width
 
 
 internal void
-SDLUpdateWindow(SDL_Window *Window, SDL_Renderer *Renderer, sdl_offscreen_buffer Buffer)
+SDLUpdateWindow(SDL_Window *Window, SDL_Renderer *Renderer, sdl_offscreen_buffer *Buffer)
 {
-    SDL_UpdateTexture(Buffer.Texture,
-                      0,                 // Pointer to SDL_Rect used for updating texture one rectangle at a time
-                      Buffer.Memory,     // Pointer to Bitmap data
-                      Buffer.Pitch);     // Pitch used for creating gaps in memory between horizontal lines of the bitmap 
+    SDL_UpdateTexture(Buffer->Texture,
+                      0,                  // Pointer to SDL_Rect used for updating texture one rectangle at a time
+                      Buffer->Memory,     // Pointer to Bitmap data
+                      Buffer->Pitch);     // Pitch used for creating gaps in memory between horizontal lines of the bitmap 
 
     /*
      * NOTE (Alex): setting srcrect and dstrect to null pointers will stretch the
      * entire texture over the entire window 
      */
     SDL_RenderCopy(Renderer,
-                    Buffer.Texture,
+                    Buffer->Texture,
                     0,             // (srcrect) Source Rectangle delimiting area of Texture we wish to stretch
                     0);            // (dstrect) Destination Rectangle delimiting area of Window the Texture selection will be stretched into
 
@@ -182,15 +186,90 @@ SDLUpdateWindow(SDL_Window *Window, SDL_Renderer *Renderer, sdl_offscreen_buffer
 }
 
 
-void HandleEvent(SDL_Event *Event)
+bool HandleEvent(SDL_Event *Event)
 {
-
+    bool ShouldQuit = false;
+    
     switch(Event->type)
     {
         case SDL_QUIT:
         {
             printf("SDL_QUIT\n");
-            Running = false;
+            ShouldQuit = true;
+        }
+        break;
+        
+        case SDL_KEYDOWN:
+        case SDL_KEYUP:
+        {
+            SDL_Keycode KeyCode = Event->key.keysym.sym;
+            /*
+             * Figure out if the key was pressed, released, or repeated:
+             * 
+             * NOTE(ALEX):
+             * - If Event->key.state == SDL_RELEASED then the key was down
+             * - If Event->type == SDL_KEYUP then the key was down
+             * - If Event->key.state == SDL_PRESSED and Event->key.repeat != 0,
+             *   then the key was also down
+             * - Otherwise, the key was not down
+             */
+            bool Pressed = (Event->key.state == SDL_PRESSED);
+            bool Released = (Event->key.state == SDL_RELEASED);
+            bool Repeat = (Event->key.repeat);
+            
+            bool IsDown = Pressed;
+            bool WasDown = Released || (Pressed && Repeat);
+
+            if (!Repeat)
+            {
+                if (KeyCode == SDLK_w)
+                {
+                }
+                else if (KeyCode == SDLK_a)
+                {
+                }
+                else if (KeyCode == SDLK_s)
+                {
+                }
+                else if (KeyCode == SDLK_d)
+                {
+                }
+                else if (KeyCode == SDLK_q)
+                {
+                }
+                else if (KeyCode == SDLK_e)
+                {
+                }
+                else if (KeyCode == SDLK_UP)
+                {
+                }
+                else if (KeyCode == SDLK_DOWN)
+                {
+                }
+                else if (KeyCode == SDLK_LEFT)
+                {
+                }
+                else if (KeyCode == SDLK_RIGHT)
+                {
+                }
+                else if (KeyCode == SDLK_ESCAPE)
+                {
+                    printf("ESCAPE: ");
+                    if (IsDown)
+                    {
+                        printf("IsDown ");
+                    }
+                    if (WasDown)
+                    {
+                        printf("WasDown");
+                    }
+                    printf("\n");
+                }
+
+                else if (KeyCode == SDLK_SPACE)
+                {
+                }
+            }
         }
         break;
 
@@ -220,19 +299,70 @@ void HandleEvent(SDL_Event *Event)
                 {
                     SDL_Window *Window = SDL_GetWindowFromID(Event->window.windowID);
                     SDL_Renderer *Renderer = SDL_GetRenderer(Window);
-                    SDLUpdateWindow(Window, Renderer, GlobalBackbuffer);
+                    SDLUpdateWindow(Window, Renderer, &GlobalBackbuffer);
                 }
                 break;
             }
         }
         break;
     }
+    return(ShouldQuit);
 }
+
+internal void
+SDLOpenGameControllers()
+{
+    int MaxJoysticks = SDL_NumJoysticks();
+    int ControllerIndex = 0;
+
+    for (int JoystickIndex = 0; JoystickIndex < MaxJoysticks; ++JoystickIndex)
+    {
+        if (!SDL_IsGameController(JoystickIndex))
+        {
+            continue;
+        }
+        if (ControllerIndex >= MAX_CONTROLLERS)
+        {
+            break;
+        }
+
+        ControllerHandles[ControllerIndex] = SDL_GameControllerOpen(JoystickIndex);
+        SDL_Joystick *JoystickHandle = SDL_GameControllerGetJoystick(ControllerHandles[ControllerIndex]);
+        RumbleHandles[ControllerIndex] = SDL_HapticOpenFromJoystick(JoystickHandle);
+        
+        if (SDL_HapticRumbleInit(RumbleHandles[ControllerIndex]) != 0)
+        {
+            SDL_HapticClose(RumbleHandles[ControllerIndex]);
+            RumbleHandles[ControllerIndex] = 0;
+        }
+
+        ControllerIndex++;
+    }
+}
+
+internal void
+SDLCloseGameControllers()
+{
+    for (int ControllerIndex = 0; ControllerIndex < MAX_CONTROLLERS; ++ControllerIndex)
+    {
+        if (ControllerHandles[ControllerIndex])
+        {
+            if (RumbleHandles[ControllerIndex])
+            {
+                SDL_HapticClose(RumbleHandles[ControllerIndex]);
+            }
+            SDL_GameControllerClose(ControllerHandles[ControllerIndex]);
+        }
+    }
+}
+
 
 int main(int argc, char *argv[])
 {
-    /*Initialize Graphics*/
-    SDL_Init(SDL_INIT_VIDEO);
+    /*Initialize Graphics and Controllers*/
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_HAPTIC);
+    
+    SDLOpenGameControllers();
 
     /*Create window*/
     SDL_Window *Window = SDL_CreateWindow("scratchapixel",
@@ -251,26 +381,76 @@ int main(int argc, char *argv[])
 
         if (Renderer)
         {
-            Running = true;
+            bool Running = true;
             sdl_window_dimension Dimension = SDLGetWindowDimension(Window);
             SDLResizeTexture(&GlobalBackbuffer, Renderer, Dimension.Width, Dimension.Height);
             int XOffset = 0;
             int YOffset = 0;
 
-            while(Running)
+            while (Running)
             {
                 SDL_Event Event;
                 //NOTE: SDL_WaitEvent blocks so instead we use PollEvent
                 while(SDL_PollEvent(&Event))
                 {
-                    HandleEvent(&Event);
+                   bool ShouldQuit = HandleEvent(&Event);
+                   if (ShouldQuit)
+                   {
+                       Running = false;
+                   }
                 }
+
+                // Poll Controllers for input
+              	for (int ControllerIndex = 0;
+                		ControllerIndex < MAX_CONTROLLERS;
+                    ++ControllerIndex)
+                {
+                		if(ControllerHandles[ControllerIndex] != 0 && SDL_GameControllerGetAttached(ControllerHandles[ControllerIndex]))
+                    {
+                        // NOTE: We have a controller with index ControllerIndex.
+                        bool Up = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_DPAD_UP);
+                        bool Down = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+                        bool Left = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+                        bool Right = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+                        bool Start = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_START);
+                        bool Back = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_BACK);
+                        bool LeftShoulder = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+                        bool RightShoulder = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+                        bool AButton = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_A);
+                        bool BButton = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_B);
+                        bool XButton = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_X);
+                        bool YButton = SDL_GameControllerGetButton(ControllerHandles[ControllerIndex], SDL_CONTROLLER_BUTTON_Y);
+
+                        int16 StickX = SDL_GameControllerGetAxis(ControllerHandles[ControllerIndex], SDL_CONTROLLER_AXIS_LEFTX);
+                        int16 StickY = SDL_GameControllerGetAxis(ControllerHandles[ControllerIndex], SDL_CONTROLLER_AXIS_LEFTY);
+                       	
+												XOffset = StickX;
+												YOffset = StickY;
+ 
+                        if (AButton)
+                        {
+                            YOffset += 2;
+                        }
+                        
+												if (BButton)
+                        {
+                            if (RumbleHandles[ControllerIndex])
+                            {
+                                SDL_HapticRumblePlay(RumbleHandles[ControllerIndex], 0.5f, 2000);
+                            }
+                        }
+
+                    }
+                    else
+                    {
+                        // TODO: This controller is not plugged in.
+                    }
+                } 
                 
-                RenderWeirdGradient(GlobalBackbuffer, XOffset, YOffset);
-                SDLUpdateWindow(Window, Renderer, GlobalBackbuffer);
+                RenderWeirdGradient(&GlobalBackbuffer, XOffset, YOffset);
+                SDLUpdateWindow(Window, Renderer, &GlobalBackbuffer);
 
                 ++XOffset;
-                YOffset += 2;
             }
         }
         else
@@ -282,7 +462,8 @@ int main(int argc, char *argv[])
     {
         //TODO: logging no window
     }
-
+		
+		SDLCloseGameControllers();
     SDL_Quit();
     return(0);
 }
